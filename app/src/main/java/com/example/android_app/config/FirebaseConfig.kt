@@ -1,18 +1,27 @@
 package com.example.android_app.config
 
-// app/src/main/java/com/example/android_app/config/FirebaseConfig.kt
-
+import android.app.Application
 import com.google.firebase.FirebaseApp
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreSettings
 
-object FirebaseConfig {
+/**
+ * Clase Application para inicializar Firebase
+ */
+class MyApplication : Application() {
+    override fun onCreate() {
+        super.onCreate()
 
-    fun initialize() {
+        // Inicializar Firebase
+        FirebaseApp.initializeApp(this)
+
+        // Configurar Firestore
+        val firestore = FirebaseFirestore.getInstance()
         val settings = FirebaseFirestoreSettings.Builder()
-            .setPersistenceEnabled(true)
+            .setPersistenceEnabled(true) // Habilitar caché offline
             .build()
+        firestore.firestoreSettings = settings
 
-        FirebaseFirestore.getInstance().firestoreSettings = settings
+        println("✅ Firebase inicializado correctamente")
     }
 }

@@ -14,7 +14,7 @@
 
         <!-- LoginActivity será la primera -->
         <activity
-            android:name=".Login.LoginActivity"
+            android:name=".login.LoginActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -23,9 +23,8 @@
         </activity>
 
         <activity
-            android:name=".Orders.`OrderModels.kt`"
+            android:name=".orders.OrderManagementActivity"
             android:exported="true" />
-
     </application>
 
 

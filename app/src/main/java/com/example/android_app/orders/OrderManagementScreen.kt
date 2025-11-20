@@ -33,7 +33,10 @@ data class Order(
     val recipient: String,
     val route: String,
     val deliveryInfo: String,
-    val driverInfo: String? = null
+    val driverInfo: String? = null,
+    val isPickedUp: Boolean = false,
+    val isPickupCompleted: Boolean = false,
+    val hasDeliveryDriver: Boolean = false
 )
 
 enum class OrderStatus(
@@ -53,21 +56,16 @@ enum class OrderStatus(
 fun OrderManagementScreen(
     orders: List<Order> = getSampleOrders(),
     selectedFilter: OrderStatus? = null,
+    orderCounts: OrderCounts = OrderCounts(),
     onFilterChange: (OrderStatus?) -> Unit = {},
     onSearchQuery: (String) -> Unit = {},
     onViewOrder: (Order) -> Unit = {},
     onAssignDriver: (Order) -> Unit = {},
+    onAssignDeliveryDriver: (Order) -> Unit = {},
     onEditOrder: (Order) -> Unit = {},
     onAddOrder: () -> Unit = {}
 ) {
     var searchQuery by remember { mutableStateOf("") }
-
-    // ✅ Conteo de pedidos por estado
-    val totalOrders = orders.size
-    val pendingCount = orders.count { it.status == OrderStatus.PENDING }
-    val inRouteCount = orders.count { it.status == OrderStatus.IN_ROUTE }
-    val deliveredCount = orders.count { it.status == OrderStatus.DELIVERED }
-    val canceledCount = orders.count { it.status == OrderStatus.CANCELED }
 
     Scaffold(
         topBar = {
@@ -79,24 +77,22 @@ fun OrderManagementScreen(
                 },
                 selectedFilter = selectedFilter,
                 onFilterChange = onFilterChange,
-                totalOrders = totalOrders,
-                pendingCount = pendingCount,
-                inRouteCount = inRouteCount,
-                deliveredCount = deliveredCount,
-                canceledCount = canceledCount
+                totalOrders = orderCounts.total,
+                pendingCount = orderCounts.pending,
+                inRouteCount = orderCounts.inRoute,
+                deliveredCount = orderCounts.delivered,
+                canceledCount = orderCounts.canceled
             )
-        }
-        //},
-        // COMENTA O ELIMINA ESTE BLOQUE COMPLETO:
-        // floatingActionButton = {
-        //     FloatingActionButton(
-        //         onClick = onAddOrder,
-        //         containerColor = Color(0xFF197FE6),
-        //         contentColor = Color.White
-        //     ) {
-        //         Icon(Icons.Default.Add, contentDescription = "Agregar pedido")
-        //     }
-        // }
+        },
+         floatingActionButton = {
+             FloatingActionButton(
+                 onClick = onAddOrder,
+                 containerColor = Color(0xFF197FE6),
+                 contentColor = Color.White
+             ) {
+                 Icon(Icons.Default.Add, contentDescription = "Agregar pedido")
+             }
+         }
     ) { padding ->
         LazyColumn(
             modifier = Modifier
@@ -110,6 +106,7 @@ fun OrderManagementScreen(
                     order = order,
                     onViewClick = { onViewOrder(order) },
                     onAssignClick = { onAssignDriver(order) },
+                    onAssignDeliveryClick = { onAssignDeliveryDriver(order) },
                     onEditClick = { onEditOrder(order) }
                 )
             }
@@ -210,6 +207,7 @@ fun OrderCard(
     order: Order,
     onViewClick: () -> Unit,
     onAssignClick: () -> Unit,
+    onAssignDeliveryClick: () -> Unit,
     onEditClick: () -> Unit
 ) {
     Card(
@@ -273,12 +271,23 @@ fun OrderCard(
                         }
                     )
                 } ?: run {
-                    if (order.status == OrderStatus.PENDING) {
-                        InfoRow(
-                            icon = Icons.Default.Person,
-                            text = "Sin motorizado asignado",
-                            textColor = Color(0xFFFB923C)
-                        )
+                    // Mostrar "Sin motorizado asignado" solo cuando se necesita asignar uno
+                    when {
+                        order.status == OrderStatus.PENDING -> {
+                            InfoRow(
+                                icon = Icons.Default.Person,
+                                text = "Sin motorizado asignado",
+                                textColor = Color(0xFFFB923C)
+                            )
+                        }
+                        order.status == OrderStatus.IN_ROUTE && order.isPickedUp && !order.hasDeliveryDriver -> {
+                            InfoRow(
+                                icon = Icons.Default.Person,
+                                text = "Sin motorizado asignado",
+                                textColor = Color(0xFFFB923C)
+                            )
+                        }
+                        // En cualquier otro caso, no mostrar nada
                     }
                 }
             }
@@ -293,27 +302,77 @@ fun OrderCard(
             ) {
                 when (order.status) {
                     OrderStatus.PENDING -> {
-                        ActionButton(
-                            text = "Ver",
-                            icon = Icons.Default.Visibility,
-                            onClick = onViewClick,
-                            modifier = Modifier.weight(1f),
-                            isPrimary = false
-                        )
-                        VerticalDivider(thickness = 1.dp, color = Color.Gray.copy(alpha = 0.1f))
-                        ActionButton(
-                            text = "Asignar",
-                            icon = Icons.Default.PersonAdd,
-                            onClick = onAssignClick,
-                            modifier = Modifier.weight(1f),
-                            isPrimary = true
-                        )
+                        // Si el recojo ya está completado, mostrar "Asignar Entrega"
+                        if (order.isPickupCompleted && !order.hasDeliveryDriver) {
+                            ActionButton(
+                                text = "Ver Detalles",
+                                icon = Icons.Default.Visibility,
+                                onClick = onViewClick,
+                                modifier = Modifier.weight(1f),
+                                isPrimary = false
+                            )
+                            VerticalDivider(thickness = 1.dp, color = Color.Gray.copy(alpha = 0.1f))
+                            ActionButton(
+                                text = "Asignar Entrega",
+                                icon = Icons.Default.LocalShipping,
+                                onClick = onAssignDeliveryClick,
+                                modifier = Modifier.weight(1f),
+                                isPrimary = true,
+                                primaryColor = Color(0xFF10B981) // Verde para diferenciarlo
+                            )
+                        } else {
+                            // Recojo no completado, mostrar "Asignar Recojo"
+                            ActionButton(
+                                text = "Ver Detalles",
+                                icon = Icons.Default.Visibility,
+                                onClick = onViewClick,
+                                modifier = Modifier.weight(1f),
+                                isPrimary = false
+                            )
+                            VerticalDivider(thickness = 1.dp, color = Color.Gray.copy(alpha = 0.1f))
+                            ActionButton(
+                                text = "Asignar Recojo",
+                                icon = Icons.Default.PersonAdd,
+                                onClick = onAssignClick,
+                                modifier = Modifier.weight(1f),
+                                isPrimary = true
+                            )
+                        }
+                    }
+                    OrderStatus.IN_ROUTE -> {
+                        // Si ya fue recogido pero no tiene motorizado de entrega
+                        if (order.isPickedUp && !order.hasDeliveryDriver) {
+                            ActionButton(
+                                text = "Ver Detalles",
+                                icon = Icons.Default.Visibility,
+                                onClick = onViewClick,
+                                modifier = Modifier.weight(1f),
+                                isPrimary = false
+                            )
+                            VerticalDivider(thickness = 1.dp, color = Color.Gray.copy(alpha = 0.1f))
+                            ActionButton(
+                                text = "Asignar Entrega",
+                                icon = Icons.Default.LocalShipping,
+                                onClick = onAssignDeliveryClick,
+                                modifier = Modifier.weight(1f),
+                                isPrimary = true,
+                                primaryColor = Color(0xFF10B981) // Verde para diferenciarlo
+                            )
+                        } else {
+                            ActionButton(
+                                text = "Ver Detalles",
+                                icon = Icons.Default.Visibility,
+                                onClick = onViewClick,
+                                modifier = Modifier.fillMaxWidth(),
+                                isPrimary = false
+                            )
+                        }
                     }
                     OrderStatus.CANCELED -> {
                         ActionButton(
-                            text = "Editar",
-                            icon = Icons.Default.Edit,
-                            onClick = onEditClick,
+                            text = "Ver Detalles",
+                            icon = Icons.Default.Visibility,
+                            onClick = onViewClick,
                             modifier = Modifier.fillMaxWidth(),
                             isPrimary = false
                         )
@@ -411,15 +470,16 @@ fun ActionButton(
     icon: ImageVector,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    isPrimary: Boolean = false
+    isPrimary: Boolean = false,
+    primaryColor: Color = Color(0xFF197FE6)
 ) {
     TextButton(
         onClick = onClick,
         modifier = modifier.fillMaxHeight(),
         shape = RoundedCornerShape(0.dp),
         colors = ButtonDefaults.textButtonColors(
-            containerColor = if (isPrimary) Color(0xFF197FE6) else Color.Transparent,
-            contentColor = if (isPrimary) Color.White else Color(0xFF197FE6)
+            containerColor = if (isPrimary) primaryColor else Color.Transparent,
+            contentColor = if (isPrimary) Color.White else primaryColor
         )
     ) {
         Row(
@@ -505,6 +565,7 @@ fun OrderCardPendingPreview() {
             ),
             onViewClick = {},
             onAssignClick = {},
+            onAssignDeliveryClick = {},
             onEditClick = {}
         )
     }
@@ -526,6 +587,7 @@ fun OrderCardInRoutePreview() {
             ),
             onViewClick = {},
             onAssignClick = {},
+            onAssignDeliveryClick = {},
             onEditClick = {}
         )
     }
@@ -547,6 +609,7 @@ fun OrderCardDeliveredPreview() {
             ),
             onViewClick = {},
             onAssignClick = {},
+            onAssignDeliveryClick = {},
             onEditClick = {}
         )
     }
@@ -568,6 +631,7 @@ fun OrderCardCANCELEDPreview() {
             ),
             onViewClick = {},
             onAssignClick = {},
+            onAssignDeliveryClick = {},
             onEditClick = {}
         )
     }

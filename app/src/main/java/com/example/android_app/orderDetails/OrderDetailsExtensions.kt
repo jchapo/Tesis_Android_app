@@ -18,9 +18,13 @@ data class OrderDetails(
     // Cronología
     val createdAt: String = "-",
     val scheduledDelivery: String = "-",
+    val pickedUpAt: String? = null,
     val deliveredAt: String? = null,
 
     // Finanzas
+    val shouldCharge: Boolean = true, // Indica si se debe cobrar este pedido
+    val baseAmount: String = "S/ 0.00",
+    val commission: String = "S/ 0.00",
     val serviceAmount: String = "S/ 0.00",
     val paymentStatus: String = "Pendiente",
     val paymentStatusColor: androidx.compose.ui.graphics.Color = androidx.compose.ui.graphics.Color.Gray,
@@ -29,9 +33,24 @@ data class OrderDetails(
     val customerPhone: String? = null,
     val recipientPhone: String? = null,
 
-    // Información adicional del motorizado
-    val driverRating: Float? = null,
-    val driverPhone: String? = null
+    // Información del motorizado de recojo
+    val pickupDriverName: String? = null,
+    val pickupDriverPhone: String? = null,
+    val pickupDriverRating: Float? = null,
+
+    // Información del motorizado de entrega
+    val deliveryDriverName: String? = null,
+    val deliveryDriverPhone: String? = null,
+    val deliveryDriverRating: Float? = null,
+
+    // Coordenadas
+    val pickupLat: Double? = null,
+    val pickupLng: Double? = null,
+    val deliveryLat: Double? = null,
+    val deliveryLng: Double? = null,
+
+    // Estado de recojo
+    val isPickedUp: Boolean = false
 )
 
 /**
@@ -81,16 +100,32 @@ fun transformToOrderDetails(docId: String, data: Map<String, Any>?): OrderDetail
         val fechas = data["fechas"] as? Map<*, *>
         val createdTimestamp = fechas?.get("creacion")
         val scheduledTimestamp = fechas?.get("entregaProgramada")
+        val pickedUpTimestamp = fechas?.get("recojo")
         val deliveredTimestamp = fechas?.get("entrega")
 
         val createdAtStr = formatDateTime(createdTimestamp)
         val scheduledDeliveryStr = formatDateTime(scheduledTimestamp)
+        val pickedUpAtStr = if (pickedUpTimestamp != null) formatDateTime(pickedUpTimestamp) else null
         val deliveredAtStr = if (deliveredTimestamp != null) formatDateTime(deliveredTimestamp) else null
 
         // Obtener información de pago
         val pago = data["pago"] as? Map<*, *>
+        val monto = pago?.get("monto") as? Number
+        val comision = pago?.get("comision") as? Number
         val montoTotal = pago?.get("montoTotal") as? Number
         val seCobra = pago?.get("seCobra") as? Boolean ?: false
+
+        val baseAmountStr = if (monto != null) {
+            "S/ ${String.format("%.2f", monto.toDouble())}"
+        } else {
+            "S/ 0.00"
+        }
+
+        val commissionStr = if (comision != null) {
+            "S/ ${String.format("%.2f", comision.toDouble())}"
+        } else {
+            "S/ 0.00"
+        }
 
         val serviceAmountStr = if (seCobra && montoTotal != null) {
             "S/ ${String.format("%.2f", montoTotal.toDouble())}"
@@ -100,11 +135,20 @@ fun transformToOrderDetails(docId: String, data: Map<String, Any>?): OrderDetail
 
         // Estado de pago
         val pagado = pago?.get("pagado") as? Boolean ?: false
-        val paymentStatusStr = if (pagado) "Pagado" else "Pendiente"
-        val paymentColor = if (pagado) {
-            androidx.compose.ui.graphics.Color(0xFF10B981)
+        val paymentStatusStr = if (!seCobra) {
+            "No cobrar"
+        } else if (pagado) {
+            "Pagado"
         } else {
-            androidx.compose.ui.graphics.Color(0xFFFB923C)
+            "Pendiente"
+        }
+
+        val paymentColor = if (!seCobra) {
+            androidx.compose.ui.graphics.Color(0xFF6B7280) // Gris para "No cobrar"
+        } else if (pagado) {
+            androidx.compose.ui.graphics.Color(0xFF10B981) // Verde para "Pagado"
+        } else {
+            androidx.compose.ui.graphics.Color(0xFFFB923C) // Naranja para "Pendiente"
         }
 
         // Obtener teléfonos
@@ -113,21 +157,35 @@ fun transformToOrderDetails(docId: String, data: Map<String, Any>?): OrderDetail
         val customerPhone = proveedor?.get("telefono") as? String
         val recipientPhone = destinatario?.get("telefono") as? String
 
-        // Información del motorizado
+        // Información de los motorizados (separados)
         val asignacion = data["asignacion"] as? Map<*, *>
-        val entrega = asignacion?.get("entrega") as? Map<*, *>
         val recojo = asignacion?.get("recojo") as? Map<*, *>
+        val entrega = asignacion?.get("entrega") as? Map<*, *>
 
-        val motorizadoTelefono = (entrega?.get("motorizadoTelefono")
-            ?: recojo?.get("motorizadoTelefono")) as? String
+        // Motorizado de recojo
+        val pickupDriverName = recojo?.get("motorizadoNombre") as? String
+        val pickupDriverPhone = recojo?.get("motorizadoTelefono") as? String
+        val pickupDriverRating = if (pickupDriverName != null) 4.8f else null
 
-        // Rating simulado (puedes obtenerlo de tu base de datos si lo tienes)
-        val driverRating = if (order.driverInfo != null &&
-            order.driverInfo != "Sin motorizado asignado") {
-            4.8f
-        } else {
-            null
-        }
+        // Motorizado de entrega
+        val deliveryDriverName = entrega?.get("motorizadoNombre") as? String
+        val deliveryDriverPhone = entrega?.get("motorizadoTelefono") as? String
+        val deliveryDriverRating = if (deliveryDriverName != null) 4.8f else null
+
+        // Coordenadas del proveedor (punto de recojo)
+        val proveedorDir = proveedor?.get("direccion") as? Map<*, *>
+        val proveedorCoords = proveedorDir?.get("coordenadas") as? Map<*, *>
+        val pickupLat = (proveedorCoords?.get("latitud") as? Number)?.toDouble()
+        val pickupLng = (proveedorCoords?.get("longitud") as? Number)?.toDouble()
+
+        // Coordenadas del destinatario (punto de entrega)
+        val destinatarioDir = destinatario?.get("direccion") as? Map<*, *>
+        val destinatarioCoords = destinatarioDir?.get("coordenadas") as? Map<*, *>
+        val deliveryLat = (destinatarioCoords?.get("latitud") as? Number)?.toDouble()
+        val deliveryLng = (destinatarioCoords?.get("longitud") as? Number)?.toDouble()
+
+        // Verificar si el pedido ya fue recogido
+        val isPickedUp = pickedUpTimestamp != null
 
         return OrderDetails(
             order = order,
@@ -137,14 +195,27 @@ fun transformToOrderDetails(docId: String, data: Map<String, Any>?): OrderDetail
             photos = photosList,
             createdAt = createdAtStr,
             scheduledDelivery = scheduledDeliveryStr,
+            pickedUpAt = pickedUpAtStr,
             deliveredAt = deliveredAtStr,
+            shouldCharge = seCobra,
+            baseAmount = baseAmountStr,
+            commission = commissionStr,
             serviceAmount = serviceAmountStr,
             paymentStatus = paymentStatusStr,
             paymentStatusColor = paymentColor,
             customerPhone = customerPhone,
             recipientPhone = recipientPhone,
-            driverRating = driverRating,
-            driverPhone = motorizadoTelefono
+            pickupDriverName = pickupDriverName,
+            pickupDriverPhone = pickupDriverPhone,
+            pickupDriverRating = pickupDriverRating,
+            deliveryDriverName = deliveryDriverName,
+            deliveryDriverPhone = deliveryDriverPhone,
+            deliveryDriverRating = deliveryDriverRating,
+            pickupLat = pickupLat,
+            pickupLng = pickupLng,
+            deliveryLat = deliveryLat,
+            deliveryLng = deliveryLng,
+            isPickedUp = isPickedUp
         )
 
     } catch (e: Exception) {
@@ -159,13 +230,37 @@ fun transformToOrderDetails(docId: String, data: Map<String, Any>?): OrderDetail
 private fun transformBasicOrder(docId: String, data: Map<String, Any>): Order? {
     try {
         // Determinar el estado del pedido
+        val fechas = data["fechas"] as? Map<*, *>
+        val asignacion = data["asignacion"] as? Map<*, *>
+
+        // Obtener información de asignaciones
+        val recojo = asignacion?.get("recojo") as? Map<*, *>
+        val entrega = asignacion?.get("entrega") as? Map<*, *>
+
+        val recojoEstado = recojo?.get("estado") as? String
+        val entregaEstado = entrega?.get("estado") as? String
+        val tieneMotorizadoEntrega = entrega?.get("motorizadoNombre") != null
+
         val status = when {
-            (data["fechas"] as? Map<*, *>)?.get("entrega") != null -> OrderStatus.DELIVERED
-            (data["fechas"] as? Map<*, *>)?.get("anulacion") != null -> OrderStatus.CANCELED
-            (data["asignacion"] as? Map<*, *>)?.let { asignacion ->
-                (asignacion["recojo"] as? Map<*, *>)?.get("estado") == "completada" ||
-                        (asignacion["entrega"] as? Map<*, *>)?.get("estado") == "en_camino"
-            } == true -> OrderStatus.IN_ROUTE
+            // Si ya fue entregado
+            fechas?.get("entrega") != null -> OrderStatus.DELIVERED
+
+            // Si fue cancelado
+            fechas?.get("anulacion") != null -> OrderStatus.CANCELED
+
+            // Si está en proceso de entrega (motorizado en camino)
+            entregaEstado == "en_camino" -> OrderStatus.IN_ROUTE
+
+            // Si el recojo fue completado pero NO tiene motorizado de entrega → PENDING
+            recojoEstado == "completada" && !tieneMotorizadoEntrega -> OrderStatus.PENDING
+
+            // Si tiene motorizado de entrega asignado → IN_ROUTE
+            tieneMotorizadoEntrega -> OrderStatus.IN_ROUTE
+
+            // Si el recojo está en proceso (asignado o en camino) → IN_ROUTE
+            recojoEstado == "en_camino" || recojoEstado == "asignada" -> OrderStatus.IN_ROUTE
+
+            // Por defecto: PENDING (esperando asignación de recojo)
             else -> OrderStatus.PENDING
         }
 
@@ -180,7 +275,6 @@ private fun transformBasicOrder(docId: String, data: Map<String, Any>): Order? {
         val deliveryDistrict = destinatarioDir?.get("distrito") as? String ?: "-"
         val route = "$pickupDistrict → $deliveryDistrict"
 
-        val fechas = data["fechas"] as? Map<*, *>
         val deliveryInfo = when (status) {
             OrderStatus.DELIVERED -> {
                 val fecha = fechas?.get("entrega")
@@ -196,22 +290,24 @@ private fun transformBasicOrder(docId: String, data: Map<String, Any>): Order? {
             }
         }
 
-        val asignacion = data["asignacion"] as? Map<*, *>
-        val driverInfo = when {
-            status == OrderStatus.PENDING -> "Sin motorizado asignado"
-            status == OrderStatus.CANCELED -> null
-            else -> {
-                val entrega = asignacion?.get("entrega") as? Map<*, *>
-                val recojo = asignacion?.get("recojo") as? Map<*, *>
-                val motorizadoNombre = (entrega?.get("motorizadoNombre")
-                    ?: recojo?.get("motorizadoNombre")) as? String
+        // Verificar si el pedido ya fue recogido
+        val pickedUpTimestamp = fechas?.get("recojo")
+        val isPickedUp = pickedUpTimestamp != null
 
-                if (motorizadoNombre != null) {
-                    "Motorizado: $motorizadoNombre"
-                } else {
-                    "Sin motorizado asignado"
-                }
-            }
+        // Verificar si tiene motorizado de entrega asignado
+        val deliveryDriverName = entrega?.get("motorizadoNombre") as? String
+        val hasDeliveryDriver = deliveryDriverName != null
+
+        // Obtener nombre del motorizado (preferir entrega si existe, sino recojo)
+        val pickupDriverName = recojo?.get("motorizadoNombre") as? String
+        val motorizadoNombre = deliveryDriverName ?: pickupDriverName
+
+        val driverInfo = when {
+            status == OrderStatus.PENDING -> null
+            status == OrderStatus.CANCELED -> null
+            status == OrderStatus.IN_ROUTE && isPickedUp && !hasDeliveryDriver -> null
+            motorizadoNombre != null -> "Motorizado: $motorizadoNombre"
+            else -> null
         }
 
         return Order(
@@ -221,7 +317,9 @@ private fun transformBasicOrder(docId: String, data: Map<String, Any>): Order? {
             recipient = recipiente,
             route = route,
             deliveryInfo = deliveryInfo,
-            driverInfo = driverInfo
+            driverInfo = driverInfo,
+            isPickedUp = isPickedUp,
+            hasDeliveryDriver = hasDeliveryDriver
         )
     } catch (e: Exception) {
         println("❌ Error en transformBasicOrder: ${e.message}")

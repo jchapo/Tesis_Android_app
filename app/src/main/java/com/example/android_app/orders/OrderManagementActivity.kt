@@ -24,17 +24,37 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.text.SimpleDateFormat
 import java.util.*
+import com.example.android_app.delivery.DeliveryScreen
+import com.example.android_app.pickup.PickupScreen
+import com.example.android_app.pickup.OpenCVInitializer
 
 sealed class Screen(val route: String) {
     object OrderList : Screen("order_list")
     object OrderDetails : Screen("order_details/{orderId}") {
         fun createRoute(orderId: String) = "order_details/$orderId"
     }
-    object AssignDriver : Screen("assign_driver/{orderId}") {
-        fun createRoute(orderId: String) = "assign_driver/$orderId"
+    object AssignDriver : Screen("assign_driver/{orderId}?type={type}") {
+        fun createRoute(orderId: String, type: String = "recojo") = "assign_driver/$orderId?type=$type"
     }
-    object AddOrder : Screen("add_order")
+    object AddOrder : Screen("add_order?orderId={orderId}") {
+        const val route_base = "add_order"
+        fun createRoute(orderId: String? = null) = if (orderId != null) "add_order?orderId=$orderId" else "add_order"
+    }
+    object Delivery : Screen("delivery/{orderId}") {
+        fun createRoute(orderId: String) = "delivery/$orderId"
+    }
+    object Pickup : Screen("pickup/{orderId}") {
+        fun createRoute(orderId: String) = "pickup/$orderId"
+    }
 }
+
+data class OrderCounts(
+    val total: Int = 0,
+    val pending: Int = 0,
+    val inRoute: Int = 0,
+    val delivered: Int = 0,
+    val canceled: Int = 0
+)
 
 class OrderViewModel : ViewModel() {
     private val db = FirebaseFirestore.getInstance()
@@ -59,6 +79,9 @@ class OrderViewModel : ViewModel() {
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
+    private val _orderCounts = MutableStateFlow(OrderCounts())
+    val orderCounts: StateFlow<OrderCounts> = _orderCounts.asStateFlow()
+
     init {
         loadActiveOrders()
     }
@@ -74,6 +97,7 @@ class OrderViewModel : ViewModel() {
                 _isLoading.value = false
                 if (e != null) {
                     _error.value = "Error al cargar pedidos: ${e.message}"
+                    Log.e("OrderViewModel", "Error loading orders", e)
                     return@addSnapshotListener
                 }
                 if (snapshot != null) {
@@ -81,7 +105,9 @@ class OrderViewModel : ViewModel() {
                         transformFirestoreDoc(doc.id, doc.data)
                     }
                     _orders.value = ordersList
+                    updateOrderCounts(ordersList)
                     applyFilters()
+                    Log.d("OrderViewModel", "✅ Pedidos actualizados: ${ordersList.size}")
                 }
             }
     }
@@ -112,12 +138,42 @@ class OrderViewModel : ViewModel() {
 
         try {
             val status = when {
+                // Si el pedido ya fue entregado
                 (data["fechas"] as? Map<*, *>)?.get("entrega") != null -> OrderStatus.DELIVERED
+
+                // Si el pedido fue cancelado
                 (data["fechas"] as? Map<*, *>)?.get("anulacion") != null -> OrderStatus.CANCELED
+
+                // Si la entrega está en camino
                 (data["asignacion"] as? Map<*, *>)?.let { asignacion ->
-                    (asignacion["recojo"] as? Map<*, *>)?.get("estado") == "completada" ||
-                            (asignacion["entrega"] as? Map<*, *>)?.get("estado") == "en_camino"
+                    (asignacion["entrega"] as? Map<*, *>)?.get("estado") == "en_camino"
                 } == true -> OrderStatus.IN_ROUTE
+
+                // Si el recojo está completado pero NO tiene motorizado de entrega, volver a PENDING
+                (data["asignacion"] as? Map<*, *>)?.let { asignacion ->
+                    (asignacion["recojo"] as? Map<*, *>)?.get("estado") == "completada" &&
+                            (asignacion["entrega"] as? Map<*, *>)?.get("motorizadoUid") == null
+                } == true -> OrderStatus.PENDING
+
+                // Si el recojo está completado y ya tiene motorizado de entrega asignado
+                (data["asignacion"] as? Map<*, *>)?.let { asignacion ->
+                    (asignacion["recojo"] as? Map<*, *>)?.get("estado") == "completada" &&
+                            (asignacion["entrega"] as? Map<*, *>)?.get("motorizadoUid") != null
+                } == true -> OrderStatus.IN_ROUTE
+
+                // Si tiene motorizado de entrega asignado (independientemente del recojo)
+                (data["asignacion"] as? Map<*, *>)?.let { asignacion ->
+                    (asignacion["entrega"] as? Map<*, *>)?.get("motorizadoUid") != null
+                } == true -> OrderStatus.IN_ROUTE
+
+                // Si tiene motorizado de recojo asignado pero el recojo aún no está completado
+                (data["asignacion"] as? Map<*, *>)?.let { asignacion ->
+                    val recojoEstado = (asignacion["recojo"] as? Map<*, *>)?.get("estado") as? String
+                    (asignacion["recojo"] as? Map<*, *>)?.get("motorizadoUid") != null &&
+                            recojoEstado != "completada"
+                } == true -> OrderStatus.IN_ROUTE
+
+                // En cualquier otro caso, está pendiente
                 else -> OrderStatus.PENDING
             }
 
@@ -166,6 +222,11 @@ class OrderViewModel : ViewModel() {
                 }
             }
 
+            // Verificar si el pedido ya fue recogido y si tiene motorizado de entrega
+            val isPickedUp = (data["fechas"] as? Map<*, *>)?.get("recojo") != null
+            val isPickupCompleted = (asignacion?.get("recojo") as? Map<*, *>)?.get("estado") == "completada"
+            val hasDeliveryDriver = (asignacion?.get("entrega") as? Map<*, *>)?.get("motorizadoUid") != null
+
             return Order(
                 id = (data["id"] as? String) ?: docId,
                 status = status,
@@ -173,10 +234,13 @@ class OrderViewModel : ViewModel() {
                 recipient = recipiente,
                 route = route,
                 deliveryInfo = deliveryInfo,
-                driverInfo = driverInfo
+                driverInfo = driverInfo,
+                isPickedUp = isPickedUp,
+                isPickupCompleted = isPickupCompleted,
+                hasDeliveryDriver = hasDeliveryDriver
             )
         } catch (e: Exception) {
-            println("❌ Error transformando documento: ${e.message}")
+            Log.e("OrderViewModel", "❌ Error transformando documento: ${e.message}", e)
             return null
         }
     }
@@ -216,6 +280,16 @@ class OrderViewModel : ViewModel() {
         _filteredOrders.value = filtered
     }
 
+    private fun updateOrderCounts(ordersList: List<Order>) {
+        _orderCounts.value = OrderCounts(
+            total = ordersList.size,
+            pending = ordersList.count { it.status == OrderStatus.PENDING },
+            inRoute = ordersList.count { it.status == OrderStatus.IN_ROUTE },
+            delivered = ordersList.count { it.status == OrderStatus.DELIVERED },
+            canceled = ordersList.count { it.status == OrderStatus.CANCELED }
+        )
+    }
+
     fun setFilter(status: OrderStatus?) {
         _selectedFilter.value = status
         applyFilters()
@@ -238,6 +312,10 @@ class OrderViewModel : ViewModel() {
 class OrderManagementActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Inicializar OpenCV para la detección de dimensiones
+        OpenCVInitializer.init(this)
+
         setContent {
             MaterialTheme {
                 OrderManagementApp()
@@ -280,35 +358,47 @@ fun OrderManagementApp(
         composable(
             route = Screen.AssignDriver.route,
             arguments = listOf(
-                navArgument("orderId") { type = NavType.StringType }
+                navArgument("orderId") { type = NavType.StringType },
+                navArgument("type") {
+                    type = NavType.StringType
+                    defaultValue = "recojo"
+                }
             )
         ) { backStackEntry ->
             val orderId = backStackEntry.arguments?.getString("orderId") ?: ""
+            val assignType = backStackEntry.arguments?.getString("type") ?: "recojo"
+            val tipoAsignacion = if (assignType == "entrega") TipoAsignacion.ENTREGA else TipoAsignacion.RECOJO
 
             AssignDriverScreenContainer(
+                viewModel = viewModel,
                 pedidoId = orderId,
-                onBackClick = { navController.popBackStack() },
+                tipoAsignacion = tipoAsignacion,
+                onBackClick = {
+                    navController.popBackStack()
+                },
                 onAssignClick = { motorizadoId, motorizadoNombre, motorizadoApellido, ruta, detalleRuta ->
-
                     val db = FirebaseFirestore.getInstance()
                     val rutaNombre = listOfNotNull(ruta, detalleRuta)
                         .filter { it.isNotBlank() }
                         .joinToString(" - ")
                     val nombreCompleto = "$motorizadoNombre $motorizadoApellido"
 
+                    // Determinar qué campos actualizar según el tipo de asignación
+                    val fieldPrefix = if (tipoAsignacion == TipoAsignacion.ENTREGA) "entrega" else "recojo"
+
                     val updates = hashMapOf<String, Any>(
-                        "asignacion.recojo.motorizadoUid" to motorizadoId,
-                        "asignacion.recojo.motorizadoNombre" to nombreCompleto,
-                        "asignacion.recojo.rutaNombre" to rutaNombre,
-                        "asignacion.recojo.asignadaEn" to com.google.firebase.Timestamp.now(),
-                        "asignacion.recojo.estado" to "asignado"
+                        "asignacion.$fieldPrefix.motorizadoUid" to motorizadoId,
+                        "asignacion.$fieldPrefix.motorizadoNombre" to nombreCompleto,
+                        "asignacion.$fieldPrefix.rutaNombre" to rutaNombre,
+                        "asignacion.$fieldPrefix.asignadaEn" to com.google.firebase.Timestamp.now(),
+                        "asignacion.$fieldPrefix.estado" to "asignado"
                     )
 
                     db.collection("pedidos")
                         .document(orderId)
                         .update(updates)
                         .addOnSuccessListener {
-                            Log.d("OrderManagement", "✅ Motorizado $nombreCompleto asignado exitosamente")
+                            Log.d("OrderManagement", "✅ Motorizado $nombreCompleto asignado exitosamente para $fieldPrefix")
                             navController.popBackStack()
                         }
                         .addOnFailureListener { e ->
@@ -319,12 +409,51 @@ fun OrderManagementApp(
             )
         }
 
-        composable(route = Screen.AddOrder.route) {
+        composable(
+            route = Screen.AddOrder.route,
+            arguments = listOf(
+                navArgument("orderId") {
+                    type = NavType.StringType
+                    nullable = true
+                    defaultValue = null
+                }
+            )
+        ) { backStackEntry ->
+            val orderId = backStackEntry.arguments?.getString("orderId")
             AddOrderScreen(
+                orderId = orderId,
                 onBackClick = { navController.popBackStack() },
                 onSaveClick = { newOrder ->
                     navController.popBackStack()
                 }
+            )
+        }
+
+        composable(
+            route = Screen.Delivery.route,
+            arguments = listOf(
+                navArgument("orderId") { type = NavType.StringType }
+            )
+        ) { backStackEntry ->
+            val orderId = backStackEntry.arguments?.getString("orderId") ?: ""
+            DeliveryScreenContainer(
+                viewModel = viewModel,
+                navController = navController,
+                orderId = orderId
+            )
+        }
+
+        composable(
+            route = Screen.Pickup.route,
+            arguments = listOf(
+                navArgument("orderId") { type = NavType.StringType }
+            )
+        ) { backStackEntry ->
+            val orderId = backStackEntry.arguments?.getString("orderId") ?: ""
+            PickupScreenContainer(
+                viewModel = viewModel,
+                navController = navController,
+                orderId = orderId
             )
         }
     }
@@ -339,6 +468,7 @@ fun OrderListScreen(
     val isLoading by viewModel.isLoading.collectAsState()
     val error by viewModel.error.collectAsState()
     val selectedFilter by viewModel.selectedFilter.collectAsState()
+    val orderCounts by viewModel.orderCounts.collectAsState()
 
     error?.let { errorMessage ->
         AlertDialog(
@@ -364,6 +494,7 @@ fun OrderListScreen(
         OrderManagementScreen(
             orders = filteredOrders,
             selectedFilter = selectedFilter,
+            orderCounts = orderCounts,
             onFilterChange = { status -> viewModel.setFilter(status) },
             onSearchQuery = { query -> viewModel.setSearchQuery(query) },
             onViewOrder = { order ->
@@ -371,6 +502,10 @@ fun OrderListScreen(
             },
             onAssignDriver = { order ->
                 navController.navigate(Screen.AssignDriver.createRoute(order.id))
+            },
+            onAssignDeliveryDriver = { order ->
+                // Navegar a AssignDriver pero con tipo ENTREGA
+                navController.navigate("assign_driver/${order.id}?type=entrega")
             },
             onEditOrder = { order ->
                 println("Editar pedido: ${order.id}")
@@ -384,6 +519,7 @@ fun OrderListScreen(
 
 @Composable
 fun AssignDriverScreenContainer(
+    viewModel: OrderViewModel,
     pedidoId: String,
     tipoAsignacion: TipoAsignacion = TipoAsignacion.RECOJO,
     onBackClick: () -> Unit = {},
@@ -400,11 +536,13 @@ fun AssignDriverScreenContainer(
         selectedMotorizadoId = selectedId,
         onMotorizadoSelected = { newId ->
             selectedId = newId
+            Log.d("AssignDriver", "✅ Motorizado seleccionado: $newId")
         },
         onAssignClick = {
             selectedId?.let { id ->
                 val motorizado = motorizados.find { it.uid == id }
                 if (motorizado != null) {
+                    Log.d("AssignDriver", "✅ Asignando motorizado: ${motorizado.nombre} ${motorizado.apellido}")
                     onAssignClick(id, motorizado.nombre, motorizado.apellido, motorizado.ruta, motorizado.detalleRuta)
                 }
             }
@@ -464,14 +602,166 @@ fun OrderDetailsScreenContainer(
         selectedOrder?.let { order ->
             com.example.ordermanagement.OrderDetailsScreen(
                 order = order,
+                userRole = com.example.ordermanagement.UserRole.ADMIN, // TODO: Cambiar según el tipo de usuario autenticado
                 onBackClick = {
                     navController.popBackStack()
                 },
                 onEditOrder = {
-                    println("Editar pedido: ${order.id}")
+                    navController.navigate(Screen.AddOrder.createRoute(order.id))
                 },
-                onUpdateStatus = {
-                    println("Actualizar estado: ${order.id}")
+                onCancelOrder = {
+                    println("Cancelar pedido: ${order.id}")
+                    // TODO: Implementar lógica para cancelar pedido
+                },
+                onPickupOrder = {
+                    navController.navigate(Screen.Pickup.createRoute(order.id))
+                },
+                onDeliverOrder = {
+                    navController.navigate(Screen.Delivery.createRoute(order.id))
+                }
+            )
+        }
+    }
+}
+
+@Composable
+fun PickupScreenContainer(
+    viewModel: OrderViewModel,
+    navController: NavHostController,
+    orderId: String
+) {
+    var orderDetails by remember { mutableStateOf<com.example.android_app.orders.OrderDetails?>(null) }
+    var isLoading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(orderId) {
+        val db = FirebaseFirestore.getInstance()
+        db.collection("pedidos")
+            .document(orderId)
+            .get()
+            .addOnSuccessListener { document ->
+                if (document.exists()) {
+                    orderDetails = com.example.android_app.orders.transformToOrderDetails(
+                        document.id,
+                        document.data
+                    )
+                } else {
+                    error = "Pedido no encontrado"
+                }
+                isLoading = false
+            }
+            .addOnFailureListener { e ->
+                error = "Error al cargar pedido: ${e.message}"
+                isLoading = false
+            }
+    }
+
+    error?.let { errorMessage ->
+        AlertDialog(
+            onDismissRequest = {
+                navController.popBackStack()
+            },
+            title = { Text("Error") },
+            text = { Text(errorMessage) },
+            confirmButton = {
+                TextButton(onClick = {
+                    navController.popBackStack()
+                }) {
+                    Text("OK")
+                }
+            }
+        )
+    }
+
+    if (isLoading) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            CircularProgressIndicator()
+        }
+    } else {
+        orderDetails?.let { details ->
+            PickupScreen(
+                orderDetails = details,
+                onBackClick = {
+                    navController.popBackStack()
+                },
+                onPickupComplete = {
+                    // Volver a los detalles del pedido
+                    navController.popBackStack()
+                }
+            )
+        }
+    }
+}
+
+@Composable
+fun DeliveryScreenContainer(
+    viewModel: OrderViewModel,
+    navController: NavHostController,
+    orderId: String
+) {
+    var orderDetails by remember { mutableStateOf<com.example.android_app.orders.OrderDetails?>(null) }
+    var isLoading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(orderId) {
+        val db = FirebaseFirestore.getInstance()
+        db.collection("pedidos")
+            .document(orderId)
+            .get()
+            .addOnSuccessListener { document ->
+                if (document.exists()) {
+                    orderDetails = com.example.android_app.orders.transformToOrderDetails(
+                        document.id,
+                        document.data
+                    )
+                } else {
+                    error = "Pedido no encontrado"
+                }
+                isLoading = false
+            }
+            .addOnFailureListener { e ->
+                error = "Error al cargar pedido: ${e.message}"
+                isLoading = false
+            }
+    }
+
+    error?.let { errorMessage ->
+        AlertDialog(
+            onDismissRequest = {
+                navController.popBackStack()
+            },
+            title = { Text("Error") },
+            text = { Text(errorMessage) },
+            confirmButton = {
+                TextButton(onClick = {
+                    navController.popBackStack()
+                }) {
+                    Text("OK")
+                }
+            }
+        )
+    }
+
+    if (isLoading) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            CircularProgressIndicator()
+        }
+    } else {
+        orderDetails?.let { details ->
+            DeliveryScreen(
+                orderDetails = details,
+                onBackClick = {
+                    navController.popBackStack()
+                },
+                onDeliveryComplete = {
+                    // Volver a la lista de pedidos
+                    navController.popBackStack(Screen.OrderList.route, inclusive = false)
                 }
             )
         }

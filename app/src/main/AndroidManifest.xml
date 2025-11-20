@@ -2,6 +2,30 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools" >
 
+    <!-- Permiso para realizar llamadas directas -->
+    <uses-feature
+        android:name="android.hardware.telephony"
+        android:required="false" />
+    <uses-permission android:name="android.permission.CALL_PHONE" />
+
+    <!-- Permiso para abrir el marcador (fallback, no requiere permiso runtime) -->
+    <uses-permission android:name="android.permission.DIAL_PHONE" />
+
+    <!-- Permisos de cámara -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <!-- Permiso para acceso a internet (para Gemini API) -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Declarar visibilidad de apps externas -->
+    <queries>
+        <!-- WhatsApp normal -->
+        <package android:name="com.whatsapp" />
+        <!-- WhatsApp Business -->
+        <package android:name="com.whatsapp.w4b" />
+    </queries>
+
     <application
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"

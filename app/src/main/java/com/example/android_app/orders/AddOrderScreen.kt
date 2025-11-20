@@ -10,6 +10,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddAPhoto
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
@@ -24,7 +25,10 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ordermanagement.DetailCard
+import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import java.text.SimpleDateFormat
+import java.util.*
 
 data class Cliente(
     val uid: String,
@@ -35,9 +39,13 @@ data class Cliente(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AddOrderScreen(
+    orderId: String? = null,
     onBackClick: () -> Unit = {},
     onSaveClick: (Order) -> Unit = {}
 ) {
+    val isEditMode = orderId != null
+    var isLoading by remember { mutableStateOf(isEditMode) }
+
     var client by remember { mutableStateOf("") }
     var pickupDistrict by remember { mutableStateOf("") }
     var recipient by remember { mutableStateOf("") }
@@ -46,7 +54,95 @@ fun AddOrderScreen(
     var width by remember { mutableStateOf("") }
     var length by remember { mutableStateOf("") }
     var amount by remember { mutableStateOf("") }
+    var commission by remember { mutableStateOf("") }
     var deliveryDate by remember { mutableStateOf("") }
+    var remitentePhone by remember { mutableStateOf("") }
+    var destinatarioPhone by remember { mutableStateOf("") }
+    var remitenteAddress by remember { mutableStateOf("") }
+    var destinatarioAddress by remember { mutableStateOf("") }
+
+    // Variables para rastrear valores originales y detectar cambios
+    var originalPickupDistrict by remember { mutableStateOf("") }
+    var originalPickupAddress by remember { mutableStateOf("") }
+    var originalDeliveryDistrict by remember { mutableStateOf("") }
+    var originalDeliveryAddress by remember { mutableStateOf("") }
+
+    // Calcular montoTotal automáticamente
+    val montoTotal = remember(amount, commission) {
+        val monto = amount.toDoubleOrNull() ?: 0.0
+        val comision = commission.toDoubleOrNull() ?: 0.0
+        monto + comision
+    }
+
+    // Cargar datos del pedido si estamos en modo edición
+    LaunchedEffect(orderId) {
+        if (orderId != null) {
+            val db = FirebaseFirestore.getInstance()
+            db.collection("pedidos")
+                .document(orderId)
+                .get()
+                .addOnSuccessListener { document ->
+                    if (document.exists()) {
+                        val data = document.data
+
+                        // Cargar datos del proveedor/remitente
+                        val proveedor = data?.get("proveedor") as? Map<*, *>
+                        remitentePhone = proveedor?.get("telefono") as? String ?: ""
+                        val proveedorDir = proveedor?.get("direccion") as? Map<*, *>
+                        remitenteAddress = proveedorDir?.get("link") as? String ?: ""
+                        pickupDistrict = proveedorDir?.get("distrito") as? String ?: ""
+                        client = proveedor?.get("nombre") as? String ?: ""
+
+                        // Cargar datos del destinatario
+                        val destinatario = data?.get("destinatario") as? Map<*, *>
+                        recipient = destinatario?.get("nombre") as? String ?: ""
+                        destinatarioPhone = destinatario?.get("telefono") as? String ?: ""
+                        val destinatarioDir = destinatario?.get("direccion") as? Map<*, *>
+                        destinatarioAddress = destinatarioDir?.get("link") as? String ?: ""
+                        deliveryDistrict = destinatarioDir?.get("distrito") as? String ?: ""
+
+                        // Cargar datos del pago
+                        val pago = data?.get("pago") as? Map<*, *>
+                        val monto = pago?.get("monto") as? Number
+                        amount = monto?.toString() ?: ""
+                        val comision = pago?.get("comision") as? Number
+                        commission = comision?.toString() ?: ""
+
+                        // Cargar fecha de entrega programada
+                        val fechas = data?.get("fechas") as? Map<*, *>
+                        val entregaProgramada = fechas?.get("entregaProgramada")
+                        if (entregaProgramada != null) {
+                            try {
+                                val timestamp = when (entregaProgramada) {
+                                    is com.google.firebase.Timestamp -> entregaProgramada.toDate()
+                                    is Date -> entregaProgramada
+                                    else -> null
+                                }
+                                timestamp?.let {
+                                    val dateFormatter = SimpleDateFormat("dd/MM/yyyy", Locale("es", "PE"))
+                                    deliveryDate = dateFormatter.format(it)
+                                }
+                            } catch (e: Exception) {
+                                // Si hay error, dejar vacío
+                            }
+                        }
+
+                        // Guardar valores originales para detectar cambios
+                        originalPickupDistrict = pickupDistrict
+                        originalPickupAddress = remitenteAddress
+                        originalDeliveryDistrict = deliveryDistrict
+                        originalDeliveryAddress = destinatarioAddress
+                    }
+                    isLoading = false
+                }
+                .addOnFailureListener {
+                    isLoading = false
+                }
+        }
+    }
+
+
+
 
     val volume = remember(height, width, length) {
         val h = height.toFloatOrNull() ?: 0f
@@ -60,7 +156,7 @@ fun AddOrderScreen(
             TopAppBar(
                 title = {
                     Text(
-                        "Nuevo Pedido",
+                        if (isEditMode) "Editar Pedido" else "Nuevo Pedido",
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier.fillMaxWidth(),
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center
@@ -79,30 +175,106 @@ fun AddOrderScreen(
         },
         bottomBar = {
             AddOrderBottomActions(
+                isEditMode = isEditMode,
                 onCancel = onBackClick,
                 onSave = {
-                    val newOrder = Order(
-                        id = "#NEW-${(1000..9999).random()}",
-                        status = OrderStatus.PENDING,
-                        client = client,
-                        recipient = recipient,
-                        route = "$pickupDistrict → $deliveryDistrict",
-                        deliveryInfo = "Entrega programada: $deliveryDate",
-                        driverInfo = "Sin motorizado asignado"
-                    )
-                    onSaveClick(newOrder)
+                    if (isEditMode && orderId != null) {
+                        // Modo edición: actualizar pedido existente
+                        val db = FirebaseFirestore.getInstance()
+                        val updates = hashMapOf<String, Any>(
+                            "proveedor.telefono" to remitentePhone,
+                            "proveedor.direccion.link" to remitenteAddress,
+                            "proveedor.direccion.distrito" to pickupDistrict,
+                            "destinatario.nombre" to recipient,
+                            "destinatario.telefono" to destinatarioPhone,
+                            "destinatario.direccion.link" to destinatarioAddress,
+                            "destinatario.direccion.distrito" to deliveryDistrict,
+                            "pago.monto" to (amount.toDoubleOrNull() ?: 0.0),
+                            "pago.comision" to (commission.toDoubleOrNull() ?: 0.0),
+                            "pago.montoTotal" to montoTotal,
+                            "actualizadoEn" to com.google.firebase.Timestamp.now()
+                        )
+
+                        // Actualizar fecha de entrega programada si cambió
+                        if (deliveryDate.isNotEmpty()) {
+                            try {
+                                val dateFormatter = SimpleDateFormat("dd/MM/yyyy", Locale("es", "PE"))
+                                val date = dateFormatter.parse(deliveryDate)
+                                date?.let {
+                                    updates["fechas.entregaProgramada"] = com.google.firebase.Timestamp(it)
+                                }
+                            } catch (e: Exception) {
+                                // Si hay error al parsear la fecha, no actualizarla
+                            }
+                        }
+
+                        // Detectar si cambió el distrito o dirección de recojo
+                        val pickupChanged = pickupDistrict != originalPickupDistrict ||
+                                          remitenteAddress != originalPickupAddress
+                        if (pickupChanged) {
+                            updates["asignacion.recojo.motorizadoNombre"] = FieldValue.delete()
+                            updates["asignacion.recojo.motorizadoUid"] = FieldValue.delete()
+                            updates["asignacion.recojo.estado"] = "pendiente"
+                            updates["asignacion.recojo.rutaId"] = FieldValue.delete()
+                            updates["asignacion.recojo.asignadaEn"] = FieldValue.delete()
+                        }
+
+                        // Detectar si cambió el distrito o dirección de entrega
+                        val deliveryChanged = deliveryDistrict != originalDeliveryDistrict ||
+                                            destinatarioAddress != originalDeliveryAddress
+                        if (deliveryChanged) {
+                            updates["asignacion.entrega.motorizadoNombre"] = FieldValue.delete()
+                            updates["asignacion.entrega.motorizadoUid"] = FieldValue.delete()
+                            updates["asignacion.entrega.estado"] = "pendiente"
+                            updates["asignacion.entrega.rutaId"] = FieldValue.delete()
+                            updates["asignacion.entrega.asignadaEn"] = FieldValue.delete()
+                            updates["asignacion.entrega.razonPendiente"] = "Pendiente de asignación manual"
+                        }
+
+                        db.collection("pedidos")
+                            .document(orderId)
+                            .update(updates)
+                            .addOnSuccessListener {
+                                onBackClick()
+                            }
+                            .addOnFailureListener { e ->
+                                // TODO: Mostrar mensaje de error
+                            }
+                    } else {
+                        // Modo creación: crear nuevo pedido
+                        val newOrder = Order(
+                            id = "#NEW-${(1000..9999).random()}",
+                            status = OrderStatus.PENDING,
+                            client = client,
+                            recipient = recipient,
+                            route = "$pickupDistrict → $deliveryDistrict",
+                            deliveryInfo = "Entrega programada: $deliveryDate",
+                            driverInfo = "Sin motorizado asignado"
+                        )
+                        onSaveClick(newOrder)
+                    }
                 }
             )
         }
     ) { padding ->
-        Column(
-            modifier = Modifier
-                .padding(padding)
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(20.dp)
-        ) {
+        if (isLoading) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator()
+            }
+        } else {
+            Column(
+                modifier = Modifier
+                    .padding(padding)
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(20.dp)
+            ) {
             val districtOptions = listOf(
                 "Ate (Lima)",
                 "Barranco (Lima)",
@@ -158,22 +330,47 @@ fun AddOrderScreen(
                     selectedOption = selectedCliente,
                     onOptionSelected = { selectedCliente = it }
                 )
-                DropdownField(
+                SearchableDropdownField(
                     label = "Distrito de Recojo",
                     options = districtOptions,
                     selectedOption = pickupDistrict,
                     onOptionSelected = { pickupDistrict = it }
                 )
+                LabeledTextField(
+                    label = "Teléfono del Remitente",
+                    value = remitentePhone,
+                    onValueChange = { remitentePhone = it },
+                    keyboardType = KeyboardType.Phone
+                )
+                LabeledTextField(
+                    label = "Dirección del Remitente",
+                    value = remitenteAddress,
+                    onValueChange = { remitenteAddress = it }
+                )
+
+
             }
 
             DetailCard(title = "Destinatario") {
                 LabeledTextField(label = "Nombre del Destinatario", value = recipient, onValueChange = { recipient = it })
-                DropdownField(
+                SearchableDropdownField(
                     label = "Distrito de Entrega",
                     options = districtOptions,
                     selectedOption = deliveryDistrict,
                     onOptionSelected = { deliveryDistrict = it }
                 )
+                LabeledTextField(
+                    label = "Teléfono del Destinatario",
+                    value = destinatarioPhone,
+                    onValueChange = { destinatarioPhone = it },
+                    keyboardType = KeyboardType.Phone
+                )
+                LabeledTextField(
+                    label = "Dirección del Destinatario",
+                    value = destinatarioAddress,
+                    onValueChange = { destinatarioAddress = it }
+                )
+
             }
 
             DetailCard(title = "Paquete") {
@@ -191,10 +388,22 @@ fun AddOrderScreen(
                     )
                 }
                 LabeledTextField(label = "Monto (S/)", value = amount, onValueChange = { amount = it }, keyboardType = KeyboardType.Number)
+                LabeledTextField(label = "Comisión (S/)", value = commission, onValueChange = { commission = it }, keyboardType = KeyboardType.Number)
+                if (montoTotal > 0) {
+                    AssistChip(
+                        onClick = {},
+                        label = { Text("Monto Total: S/ ${"%.2f".format(montoTotal)}") },
+                        colors = AssistChipDefaults.assistChipColors(containerColor = Color(0xFF10B981).copy(alpha = 0.1f))
+                    )
+                }
             }
 
             DetailCard(title = "Entrega") {
-                LabeledTextField(label = "Fecha de Entrega", value = deliveryDate, onValueChange = { deliveryDate = it }, keyboardType = KeyboardType.Text)
+                DatePickerField(
+                    label = "Fecha de Entrega",
+                    selectedDate = deliveryDate,
+                    onDateSelected = { deliveryDate = it }
+                )
             }
 
             DetailCard(title = "Fotos del Paquete") {
@@ -214,6 +423,7 @@ fun AddOrderScreen(
             }
 
             Spacer(modifier = Modifier.height(80.dp))
+            }
         }
     }
 }
@@ -263,6 +473,7 @@ private fun LabeledTextField(
 
 @Composable
 fun AddOrderBottomActions(
+    isEditMode: Boolean = false,
     onCancel: () -> Unit,
     onSave: () -> Unit
 ) {
@@ -316,7 +527,7 @@ fun AddOrderBottomActions(
                     modifier = Modifier.size(20.dp)
                 )
                 Spacer(Modifier.width(8.dp))
-                Text("Guardar", fontWeight = FontWeight.Medium)
+                Text(if (isEditMode) "Actualizar" else "Guardar", fontWeight = FontWeight.Medium)
             }
         }
     }
@@ -428,6 +639,62 @@ fun SearchableDropdownField(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun DatePickerField(
+    label: String,
+    selectedDate: String,
+    onDateSelected: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var showDatePicker by remember { mutableStateOf(false) }
+    val datePickerState = rememberDatePickerState()
+
+    val dateFormatter = remember { SimpleDateFormat("dd/MM/yyyy", Locale("es", "PE")) }
+
+    Column(modifier = modifier) {
+        Text(label, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = Color.Gray)
+        Spacer(modifier = Modifier.height(4.dp))
+
+        OutlinedTextField(
+            value = selectedDate,
+            onValueChange = {},
+            readOnly = true,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(8.dp),
+            trailingIcon = {
+                IconButton(onClick = { showDatePicker = true }) {
+                    Icon(Icons.Default.CalendarToday, contentDescription = "Seleccionar fecha")
+                }
+            },
+            placeholder = { Text("Seleccione una fecha") }
+        )
+    }
+
+    if (showDatePicker) {
+        DatePickerDialog(
+            onDismissRequest = { showDatePicker = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    datePickerState.selectedDateMillis?.let { millis ->
+                        val date = Date(millis)
+                        onDateSelected(dateFormatter.format(date))
+                    }
+                    showDatePicker = false
+                }) {
+                    Text("Aceptar")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDatePicker = false }) {
+                    Text("Cancelar")
+                }
+            }
+        ) {
+            DatePicker(state = datePickerState)
+        }
+    }
+}
 
 @Composable
 fun rememberClientes(): List<Cliente> {

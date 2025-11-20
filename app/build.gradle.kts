@@ -96,4 +96,18 @@ dependencies {
 
     // Navigation
     implementation("androidx.navigation:navigation-compose:2.7.6")
+
+    // CameraX
+    implementation("androidx.camera:camera-camera2:1.3.1")
+    implementation("androidx.camera:camera-lifecycle:1.3.1")
+    implementation("androidx.camera:camera-view:1.3.1")
+
+    // Google AI (Gemini)
+    implementation("com.google.ai.client.generativeai:generativeai:0.1.2")
+
+    // OpenCV para Android
+    implementation("org.opencv:opencv:4.9.0")
+
+    // Gson para parsear JSON
+    implementation("com.google.code.gson:gson:2.10.1")
 }

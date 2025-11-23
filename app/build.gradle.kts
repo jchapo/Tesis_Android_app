@@ -84,6 +84,7 @@ dependencies {
     implementation(platform("com.google.firebase:firebase-bom:32.7.0"))
     implementation("com.google.firebase:firebase-firestore-ktx")
     implementation("com.google.firebase:firebase-auth-ktx")
+    implementation("com.google.firebase:firebase-storage-ktx")
 
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
@@ -102,6 +103,9 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:1.3.1")
     implementation("androidx.camera:camera-view:1.3.1")
 
+    // ExifInterface para manejar metadatos de orientación de imágenes
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
+
     // Google AI (Gemini)
     implementation("com.google.ai.client.generativeai:generativeai:0.1.2")
 
@@ -110,4 +114,10 @@ dependencies {
 
     // Gson para parsear JSON
     implementation("com.google.code.gson:gson:2.10.1")
+
+    // OkHttp para llamadas HTTP
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
+    // WorkManager para tareas en background
+    implementation("androidx.work:work-runtime-ktx:2.9.0")
 }
